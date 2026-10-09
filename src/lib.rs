@@ -227,7 +227,9 @@ macro_rules! shared_impl {
             acquire_internal(&self.internal).send_count as usize
         }
         /// Closes the channel completely on both sides and terminates waiting
-        /// signals.
+        /// signals. Messages still in the queue are dropped; to let receivers
+        /// drain them, drop all senders or use
+        /// [`close_send`](Self::close_send) instead.
         ///
         /// # Examples
         ///

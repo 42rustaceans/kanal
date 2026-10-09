@@ -260,20 +260,21 @@ impl<T> Drop for ReceiveFuture<'_, T> {
                 // SAFETY: data is not moved it's safe to drop it or put it back
                 // to the channel queue
                 unsafe {
-                    if self.internal.capacity() == 0 {
+                    let data = self.sig.assume_init();
+                    let mut internal = acquire_internal(self.internal);
+                    // a queued value would not wake a waiting receiver
+                    if let Some(next) = internal.next_recv() {
+                        drop(internal);
+                        next.send(data);
+                    } else if self.internal.capacity() != 0 {
+                        internal.queue.push_front(data);
+                    } else {
+                        drop(internal);
                         #[cfg(debug_assertions)]
                         println!(
                             "warning: ReceiveFuture dropped while send operation is in progress"
                         );
-                        self.sig.drop_data();
-                    } else {
-                        // fallback: push it back to the front of the channel
-                        // queue to avoid losing it; this may transiently
-                        // exceed the channel capacity by one element, which
-                        // is preferable to dropping delivered data
-                        acquire_internal(self.internal)
-                            .queue
-                            .push_front(self.sig.assume_init())
+                        drop(data);
                     }
                 }
             }

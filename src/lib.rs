@@ -787,13 +787,10 @@ impl<T> Sender<T> {
                 continue;
             }
             if cap > 0 {
-                while internal.queue.len() < cap {
-                    if let Some(v) = elements.pop_front() {
-                        internal.queue.push_back(v);
-                    } else {
-                        return Ok(());
-                    }
-                }
+                let n = cap
+                    .saturating_sub(internal.queue.len())
+                    .min(elements.len());
+                internal.queue.extend(elements.drain(..n));
                 if unlikely(elements.is_empty()) {
                     return Ok(());
                 }

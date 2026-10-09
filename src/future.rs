@@ -804,15 +804,15 @@ impl<'a, 'b, T> Future for SendManyFuture<'a, 'b, T> {
             //    capacity).
             // -----------------------------------------------------------------
             if cap > 0 {
-                while internal.queue.len() < cap {
-                    if let Some(v) = this.elements.pop_front() {
-                        internal.queue.push_back(v);
-                    } else {
-                        // All elements have been queued.
-                        drop(internal);
-                        this.finished = true;
-                        return Poll::Ready(Ok(()));
-                    }
+                let n = cap
+                    .saturating_sub(internal.queue.len())
+                    .min(this.elements.len());
+                internal.queue.extend(this.elements.drain(..n));
+                if this.elements.is_empty() {
+                    // All elements have been queued.
+                    drop(internal);
+                    this.finished = true;
+                    return Poll::Ready(Ok(()));
                 }
             }
 

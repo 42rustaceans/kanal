@@ -435,7 +435,6 @@ impl<T> Future for ReceiveFuture<'_, T> {
 pub struct ReceiveStream<'a, T: 'a> {
     future: Pin<Box<ReceiveFuture<'a, T>>>,
     terminated: bool,
-    receiver: &'a AsyncReceiver<T>,
 }
 
 impl<T> Debug for ReceiveStream<'_, T> {
@@ -471,7 +470,7 @@ impl<T> Stream for ReceiveStream<'_, T> {
 
 impl<T> FusedStream for ReceiveStream<'_, T> {
     fn is_terminated(&self) -> bool {
-        self.receiver.is_terminated()
+        self.terminated
     }
 }
 
@@ -482,7 +481,6 @@ impl<'a, T> ReceiveStream<'a, T> {
         ReceiveStream {
             future: Box::pin(future),
             terminated: false,
-            receiver,
         }
     }
 }

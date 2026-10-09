@@ -285,7 +285,8 @@ impl<T> SyncSignal<T> {
             Ordering::Release,
             Ordering::Acquire,
         ) {
-            Ok(_) => loop {
+            // already registered by a timed out wait_timeout
+            Ok(_) | Err(LOCKED_STARVATION) => loop {
                 park();
                 let v = self.state.load(Ordering::Relaxed);
                 if likely(v > LOCKED_STARVATION) {
@@ -313,7 +314,8 @@ impl<T> SyncSignal<T> {
             Ordering::Release,
             Ordering::Acquire,
         ) {
-            Ok(_) => loop {
+            // already registered by a timed out wait_timeout
+            Ok(_) | Err(LOCKED_STARVATION) => loop {
                 park();
                 let v = self.state.load(Ordering::Relaxed);
                 if v > LOCKED_STARVATION {

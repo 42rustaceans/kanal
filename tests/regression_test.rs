@@ -120,3 +120,49 @@ fn stream_is_not_terminated_while_item_pending() {
         assert!(stream.is_terminated());
     }
 }
+
+struct PanicWaker;
+impl Wake for PanicWaker {
+    fn wake(self: Arc<Self>) {
+        panic!("waker panics")
+    }
+}
+
+#[test]
+fn panicking_waker_does_not_strand_rest_of_batch() {
+    let (s, r) = kanal::bounded::<u64>(0);
+    let w = Arc::new(PanicWaker).into();
+    let mut fut = Box::pin(s.as_async().send(1));
+    assert!(poll_once(fut.as_mut(), &w).is_pending());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let s2 = s.clone();
+    thread::spawn(move || tx.send(s2.send(2).is_ok()));
+    thread::sleep(Duration::from_millis(50));
+
+    let mut got = Vec::new();
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        r.drain_into(&mut got)
+    }));
+    assert!(res.is_err());
+    assert_eq!(rx.recv_timeout(Duration::from_secs(2)), Ok(true));
+    assert_eq!(got, [1, 2]);
+}
+
+#[test]
+fn drain_future_keeps_delivered_value_once_after_waker_panic() {
+    let (s, r) = kanal::bounded_async::<String>(0);
+    let mut got = Vec::new();
+    let mut d = Box::pin(r.drain_into_blocking(&mut got));
+    assert!(poll_once(d.as_mut(), Waker::noop()).is_pending());
+    s.as_sync().try_send("first".to_string()).unwrap();
+    let w = Arc::new(PanicWaker).into();
+    let mut f = Box::pin(s.send("second".to_string()));
+    assert!(poll_once(f.as_mut(), &w).is_pending());
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        poll_once(d.as_mut(), Waker::noop())
+    }));
+    assert!(res.is_err());
+    drop(d);
+    drop(f);
+    assert_eq!(got, ["first", "second"]);
+}

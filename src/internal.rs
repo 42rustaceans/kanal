@@ -192,13 +192,36 @@ impl<T> Cleanup<T> {
     /// Terminates the detached signals and drops the detached queue. Must be
     /// called without holding the channel lock.
     pub(crate) fn run(self) {
-        for t in self.wait_list.iter() {
+        complete_all(self.wait_list.iter(), |t| {
             // SAFETY: the signals were detached from the waitlist under the
             // lock, their owners can no longer cancel them, and this side
             // terminates each of them exactly once.
             unsafe { t.terminate() }
-        }
+        });
         drop(self.queue);
+    }
+}
+
+/// Runs `f` for every detached signal even if a call panics (e.g. in a user
+/// waker), so no waiter is left stranded; the first panic keeps unwinding.
+#[inline(always)]
+pub(crate) fn complete_all<I: IntoIterator>(items: I, f: impl FnMut(I::Item)) {
+    struct Rest<I: Iterator, F: FnMut(I::Item)>(I, F);
+    impl<I: Iterator, F: FnMut(I::Item)> Drop for Rest<I, F> {
+        fn drop(&mut self) {
+            // only finds items left when a call to `f` panicked
+            let Rest(items, f) = self;
+            for item in items {
+                let _ = std::panic::catch_unwind(
+                    core::panic::AssertUnwindSafe(|| f(item)),
+                );
+            }
+        }
+    }
+    let mut rest = Rest(items.into_iter(), f);
+    let Rest(items, f) = &mut rest;
+    for item in items {
+        f(item);
     }
 }
 

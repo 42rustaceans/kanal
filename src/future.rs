@@ -6,7 +6,7 @@ use branches::unlikely;
 use futures_core::{FusedStream, Future, Stream};
 
 use crate::{
-    internal::{acquire_internal, Internal},
+    internal::{acquire_internal, complete_all, Internal},
     signal::{AsyncSignal, DeferredNotify},
     AsyncReceiver, ReceiveError, SendError,
 };
@@ -530,10 +530,12 @@ impl<'a, 'b, T> DrainIntoFuture<'a, 'b, T> {
         self.vec.reserve(available);
         self.vec.extend(internal.queue.drain(..));
         drop(internal);
-        for p in senders {
+        complete_all(senders, |p| {
             // SAFETY: it's safe to receive from owned signal once
-            unsafe { self.vec.push(p.recv()) }
-        }
+            let (v, notify) = unsafe { p.recv_deferred() };
+            self.vec.push(v);
+            notify.notify();
+        });
         available
     }
 }
@@ -590,11 +592,13 @@ impl<T> Future for DrainIntoFuture<'_, '_, T> {
                     this.vec.extend(internal.queue.drain(..));
                     drop(internal);
                     this.sig.set_state_relaxed(FutureState::Done);
-                    for p in senders {
+                    complete_all(senders, |p| {
                         // SAFETY: it's safe to receive from owned signal
                         // once
-                        unsafe { this.vec.push(p.recv()) }
-                    }
+                        let (v, notify) = unsafe { p.recv_deferred() };
+                        this.vec.push(v);
+                        notify.notify();
+                    });
                     return Poll::Ready(Ok(available));
                 }
                 if unlikely(internal.send_count == 0) {
@@ -618,11 +622,11 @@ impl<T> Future for DrainIntoFuture<'_, '_, T> {
                 // one message was delivered directly into the signal
                 // SAFETY: data is received and safe to read
                 this.vec.push(unsafe { this.sig.assume_init() });
+                this.sig.set_state_relaxed(FutureState::Done);
                 // batch whatever else arrived while waking up; the closed
                 // checks are deliberately skipped as one message is already
                 // owned and a closed channel simply yields nothing extra
                 let extra = this.drain_available();
-                this.sig.set_state_relaxed(FutureState::Done);
                 Poll::Ready(Ok(1 + extra))
             }
             FutureState::Pending => {
@@ -655,8 +659,8 @@ impl<T> Future for DrainIntoFuture<'_, '_, T> {
                             // SAFETY: the sender wrote the data, it is safe
                             // to read
                             this.vec.push(unsafe { this.sig.assume_init() });
-                            let extra = this.drain_available();
                             this.sig.set_state_relaxed(FutureState::Done);
+                            let extra = this.drain_available();
                             Poll::Ready(Ok(1 + extra))
                         } else {
                             this.sig.set_state_relaxed(FutureState::Done);
@@ -779,13 +783,13 @@ impl<'a, 'b, T> Future for SendManyFuture<'a, 'b, T> {
             let receivers = internal.take_recvs(this.elements.len());
             if !receivers.is_empty() {
                 drop(internal);
-                for waiter in receivers {
+                complete_all(receivers, |waiter| {
                     let v = this.elements.pop_front().unwrap();
                     // SAFETY: it is safe to send an owned waiter once
                     unsafe {
                         waiter.send(v);
                     }
-                }
+                });
                 if unlikely(this.elements.is_empty()) {
                     // No more elements to send.
                     this.finished = true;

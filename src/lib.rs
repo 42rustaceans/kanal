@@ -30,7 +30,9 @@ use branches::unlikely;
 pub use error::*;
 #[cfg(feature = "async")]
 pub use future::*;
-use internal::{acquire_internal, try_acquire_internal, Internal};
+use internal::{
+    acquire_internal, complete_all, try_acquire_internal, Internal,
+};
 use pointer::KanalPtr;
 use signal::*;
 
@@ -597,10 +599,12 @@ macro_rules! shared_recv_impl {
             vec.reserve(required_cap);
             vec.extend(internal.queue.drain(..));
             drop(internal);
-            for p in senders {
+            complete_all(senders, |p| {
                 // SAFETY: it's safe to receive from owned signal once
-                unsafe { vec.push(p.recv()) }
-            }
+                let (v, notify) = unsafe { p.recv_deferred() };
+                vec.push(v);
+                notify.notify();
+            });
             Ok(required_cap)
         }
 
@@ -771,12 +775,12 @@ impl<T> Sender<T> {
             let receivers = internal.take_recvs(elements.len());
             if !receivers.is_empty() {
                 drop(internal);
-                for first in receivers {
+                complete_all(receivers, |first| {
                     // SAFETY: it's safe to send to owned signal once
                     unsafe {
                         first.send(elements.pop_front().unwrap());
                     }
-                }
+                });
                 if unlikely(elements.is_empty()) {
                     return Ok(());
                 }
@@ -1421,10 +1425,12 @@ impl<T> Receiver<T> {
             vec.reserve(available);
             vec.extend(internal.queue.drain(..));
             drop(internal);
-            for p in senders {
+            complete_all(senders, |p| {
                 // SAFETY: it's safe to receive from owned signal once
-                unsafe { vec.push(p.recv()) }
-            }
+                let (v, notify) = unsafe { p.recv_deferred() };
+                vec.push(v);
+                notify.notify();
+            });
             return Ok(available);
         }
         if unlikely(internal.send_count == 0) {
@@ -1460,10 +1466,12 @@ impl<T> Receiver<T> {
         vec.reserve(extra);
         vec.extend(internal.queue.drain(..));
         drop(internal);
-        for p in senders {
+        complete_all(senders, |p| {
             // SAFETY: it's safe to receive from owned signal once
-            unsafe { vec.push(p.recv()) }
-        }
+            let (v, notify) = unsafe { p.recv_deferred() };
+            vec.push(v);
+            notify.notify();
+        });
         Ok(1 + extra)
     }
 

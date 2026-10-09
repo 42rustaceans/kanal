@@ -376,4 +376,25 @@ mod async_models {
             sender.join().unwrap();
         });
     }
+
+    /// A value delivered to a dropped ReceiveFuture reaches a waiting receiver.
+    #[test]
+    fn async_recv_future_drop_hands_value_to_waiting_receiver() {
+        loom::model(|| {
+            let (s, r) = kanal::bounded_async::<usize>(1);
+            let _keep_open = s.clone();
+            let mut fut = Box::pin(r.recv());
+            let waker = futures::task::noop_waker();
+            let mut cx = Context::from_waker(&waker);
+            assert!(fut.as_mut().poll(&mut cx).is_pending());
+            let r2 = r.clone_sync();
+            let receiver = thread::spawn(move || r2.recv().unwrap());
+            let sender = thread::spawn(move || {
+                s.as_sync().send(1).unwrap();
+            });
+            drop(fut);
+            sender.join().unwrap();
+            assert_eq!(receiver.join().unwrap(), 1);
+        });
+    }
 }

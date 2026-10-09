@@ -130,7 +130,9 @@ impl<T> Future for SendFuture<'_, T> {
             FutureState::Unregistered => {
                 let cap = this.internal.capacity();
                 let mut internal = acquire_internal(this.internal);
-                if unlikely(internal.recv_count == 0) {
+                if unlikely(
+                    internal.recv_count == 0 || internal.send_count == 0,
+                ) {
                     drop(internal);
                     this.sig.set_state_relaxed(FutureState::Done);
                     // SAFETY: the data failed to move, we can safely return it
@@ -761,7 +763,7 @@ impl<'a, 'b, T> Future for SendManyFuture<'a, 'b, T> {
             let mut internal = acquire_internal(this.internal);
 
             // Channel is closed from the other side
-            if unlikely(internal.recv_count == 0) {
+            if unlikely(internal.recv_count == 0 || internal.send_count == 0) {
                 // Return the first element that could not be sent.
                 let first = this.elements.pop_front().unwrap();
                 drop(internal);

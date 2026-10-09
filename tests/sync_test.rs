@@ -438,6 +438,16 @@ fn recv_from_closed_channel_queue() {
 }
 
 #[test]
+fn recv_from_send_closed_channel_queue() {
+    let (tx, rx) = new(Some(1));
+    tx.send(Box::new(1)).unwrap();
+    tx.close_send().unwrap();
+    assert!(tx.send(Box::new(2)).is_err());
+    assert_eq!(*rx.recv().unwrap(), 1);
+    assert_eq!(rx.recv().err().unwrap(), ReceiveError());
+}
+
+#[test]
 fn send_to_half_closed_channel() {
     let (tx, rx) = new(Some(1));
     drop(rx);

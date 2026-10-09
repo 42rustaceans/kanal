@@ -114,7 +114,7 @@ impl<T> fmt::Debug for AsyncSender<T> {
 
 macro_rules! check_recv_closed_timeout {
     ($internal:ident,$data:ident) => {
-        if unlikely($internal.recv_count == 0) {
+        if unlikely($internal.recv_count == 0 || $internal.send_count == 0) {
             // Avoid wasting lock time on dropping failed send object
             drop($internal);
             return Err(SendTimeoutError::Closed($data));
@@ -246,6 +246,32 @@ macro_rules! shared_impl {
             internal.recv_count = 0;
             internal.send_count = 0;
             let cleanup = internal.detach_cleanup(true);
+            drop(internal);
+            cleanup.run();
+            Ok(())
+        }
+        /// Closes the send side of the channel, as if all senders were
+        /// dropped: further sends fail, while receivers still receive the
+        /// messages already queued. Like after dropping all senders,
+        /// `sender_count()` then returns 0.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// let (s, r) = kanal::unbounded::<u64>();
+        /// s.send(1).unwrap();
+        /// s.close_send().unwrap();
+        /// assert!(s.send(2).is_err());
+        /// assert_eq!(r.recv().unwrap(), 1);
+        /// assert!(r.recv().is_err());
+        /// ```
+        pub fn close_send(&self) -> Result<(), CloseError> {
+            let mut internal = acquire_internal(&self.internal);
+            if unlikely(internal.send_count == 0) {
+                return Err(CloseError());
+            }
+            internal.send_count = 0;
+            let cleanup = internal.detach_cleanup(false);
             drop(internal);
             cleanup.run();
             Ok(())
@@ -632,7 +658,7 @@ impl<T> Sender<T> {
     pub fn send(&self, data: T) -> Result<(), SendError<T>> {
         let cap = self.internal.capacity();
         let mut internal = acquire_internal(&self.internal);
-        if unlikely(internal.recv_count == 0) {
+        if unlikely(internal.recv_count == 0 || internal.send_count == 0) {
             drop(internal);
             return Err(SendError(data));
         }
@@ -733,7 +759,7 @@ impl<T> Sender<T> {
         let cap = self.internal.capacity();
         loop {
             let mut internal = acquire_internal(&self.internal);
-            if unlikely(internal.recv_count == 0) {
+            if unlikely(internal.recv_count == 0 || internal.send_count == 0) {
                 drop(internal);
                 return Err(SendError(elements.pop_front().unwrap()));
             }
@@ -848,7 +874,7 @@ impl<T> Sender<T> {
     ) -> Result<(), SendTimeoutError<T>> {
         let cap = self.internal.capacity();
         let mut internal = acquire_internal(&self.internal);
-        if unlikely(internal.recv_count == 0) {
+        if unlikely(internal.recv_count == 0 || internal.send_count == 0) {
             // Avoid wasting lock time on dropping failed send object
             drop(internal);
             return Err(SendTimeoutError::Closed(data));

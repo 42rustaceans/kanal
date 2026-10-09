@@ -550,8 +550,10 @@ impl<T> AsyncSignal<T> {
     // while we are updating it.  this function should not be called if
     // signal is uninitialized or already shared.
     #[inline(always)]
-    pub(crate) unsafe fn update_waker(&self, waker: &Waker) {
-        self.waker.with_mut(|w| unsafe { *w = waker.clone() });
+    #[must_use = "drop the previous waker after releasing the channel lock"]
+    pub(crate) unsafe fn update_waker(&self, waker: Waker) -> Waker {
+        self.waker
+            .with_mut(|w| unsafe { core::mem::replace(&mut *w, waker) })
     }
     #[inline(always)]
     pub(crate) unsafe fn clone_waker(&self) -> Waker {

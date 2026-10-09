@@ -166,3 +166,29 @@ fn drain_future_keeps_delivered_value_once_after_waker_panic() {
     drop(f);
     assert_eq!(got, ["first", "second"]);
 }
+
+/// Drops of a replaced waker must not run under the channel lock.
+#[test]
+fn replaced_waker_is_dropped_outside_channel_lock() {
+    struct LenOnDrop(kanal::AsyncReceiver<u64>);
+    #[allow(clippy::manual_noop_waker)] // the drop side effect is the test
+    impl Wake for LenOnDrop {
+        fn wake(self: Arc<Self>) {}
+    }
+    impl Drop for LenOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.len();
+        }
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let (_s, r) = kanal::bounded_async::<u64>(0);
+        let mut fut = Box::pin(r.recv());
+        let w: Waker = Arc::new(LenOnDrop(r.clone())).into();
+        assert!(poll_once(fut.as_mut(), &w).is_pending());
+        drop(w); // the future now holds the last reference
+        assert!(poll_once(fut.as_mut(), Waker::noop()).is_pending());
+        let _ = tx.send(());
+    });
+    assert!(rx.recv_timeout(Duration::from_secs(2)).is_ok());
+}

@@ -159,12 +159,12 @@ impl<T> Future for SendFuture<'_, T> {
                 }
                 this.sig.set_state(FutureState::Pending);
                 // SAFETY: waker is empty, it is safe to init it here
-                unsafe {
-                    this.sig.update_waker(cx.waker());
-                }
+                let old_waker =
+                    unsafe { this.sig.update_waker(cx.waker().clone()) };
                 // send directly to the waitlist
                 internal.push_signal(this.sig.dynamic_ptr());
                 drop(internal);
+                drop(old_waker);
                 Poll::Pending
             }
             FutureState::Success => {
@@ -179,15 +179,15 @@ impl<T> Future for SendFuture<'_, T> {
                 if unlikely(unsafe { !this.sig.will_wake(waker) }) {
                     // Waker is changed and we need to update waker in the
                     // waiting list
+                    let waker = waker.clone();
                     let internal = acquire_internal(this.internal);
                     if internal.send_signal_exists(this.sig.as_tagged_ptr()) {
                         // SAFETY: signal is not shared with other thread yet so
                         // it's safe to update waker
                         // locally
-                        unsafe {
-                            this.sig.update_waker(waker);
-                        }
+                        let old_waker = unsafe { this.sig.update_waker(waker) };
                         drop(internal);
+                        drop(old_waker);
                         return Poll::Pending;
                     }
                     drop(internal);
@@ -354,12 +354,12 @@ impl<T> Future for ReceiveFuture<'_, T> {
                     this.sig.set_state(FutureState::Pending);
                     // SAFETY: waker is NOOP and not shared yet, it is safe to
                     // init it here
-                    unsafe {
-                        this.sig.update_waker(cx.waker());
-                    }
+                    let old_waker =
+                        unsafe { this.sig.update_waker(cx.waker().clone()) };
                     // no active waiter so push to the queue
                     internal.push_signal(this.sig.dynamic_ptr());
                     drop(internal);
+                    drop(old_waker);
                     Poll::Pending
                 }
                 FutureState::Success => {
@@ -374,16 +374,17 @@ impl<T> Future for ReceiveFuture<'_, T> {
                     if unsafe { !this.sig.will_wake(waker) } {
                         // the Waker is changed and we need to update waker in
                         // the waiting list
+                        let waker = waker.clone();
                         let internal = acquire_internal(this.internal);
                         if internal.recv_signal_exists(this.sig.as_tagged_ptr())
                         {
                             // SAFETY: signal is not shared with other thread
                             // yet so it's safe to
                             // update waker locally
-                            unsafe {
-                                this.sig.update_waker(waker);
-                            }
+                            let old_waker =
+                                unsafe { this.sig.update_waker(waker) };
                             drop(internal);
+                            drop(old_waker);
                             Poll::Pending
                         } else {
                             drop(internal);
@@ -608,14 +609,14 @@ impl<T> Future for DrainIntoFuture<'_, '_, T> {
                 this.sig.set_state(FutureState::Pending);
                 // SAFETY: waker is NOOP and not shared yet, it is safe to
                 // init it here
-                unsafe {
-                    this.sig.update_waker(cx.waker());
-                }
+                let old_waker =
+                    unsafe { this.sig.update_waker(cx.waker().clone()) };
                 // take_sends observed an empty waitlist and flipped it to
                 // the receive side, so pushing a receive signal here
                 // upholds the waitlist invariant
                 internal.push_signal(this.sig.dynamic_ptr());
                 drop(internal);
+                drop(old_waker);
                 Poll::Pending
             }
             FutureState::Success => {
@@ -636,14 +637,14 @@ impl<T> Future for DrainIntoFuture<'_, '_, T> {
                 if unsafe { !this.sig.will_wake(waker) } {
                     // the Waker is changed and we need to update waker in
                     // the waiting list
+                    let waker = waker.clone();
                     let internal = acquire_internal(this.internal);
                     if internal.recv_signal_exists(this.sig.as_tagged_ptr()) {
                         // SAFETY: signal is not shared with other thread
                         // yet so it's safe to update waker locally
-                        unsafe {
-                            this.sig.update_waker(waker);
-                        }
+                        let old_waker = unsafe { this.sig.update_waker(waker) };
                         drop(internal);
+                        drop(old_waker);
                         Poll::Pending
                     } else {
                         drop(internal);
@@ -822,16 +823,16 @@ impl<'a, 'b, T> Future for SendManyFuture<'a, 'b, T> {
             if let Some(v) = this.elements.pop_front() {
                 // SAFETY: we checked above and we are not in any wait queue as
                 // we are not registered in the queue yet.
-                unsafe {
+                let old_waker = unsafe {
                     this.fut.get_mut().sig.reset_send(v);
                     // Register the waker before sharing the signal, so the
                     // wakeup cannot be lost and the poll of the inner future
                     // below does not have to re-lock the channel to fix a
                     // stale waker up.
-                    if !this.fut.get_mut().sig.will_wake(cx.waker()) {
-                        this.fut.get_mut().sig.update_waker(cx.waker());
-                    }
-                }
+                    (!this.fut.get_mut().sig.will_wake(cx.waker())).then(|| {
+                        this.fut.get_mut().sig.update_waker(cx.waker().clone())
+                    })
+                };
                 // take_recvs already flipped the waitlist over to the send
                 // side, pushing a send signal while recv_blocking is set
                 // would corrupt the waitlist
@@ -841,6 +842,7 @@ impl<'a, 'b, T> Future for SendManyFuture<'a, 'b, T> {
 
                 this.in_wait_queue = true;
                 drop(internal);
+                drop(old_waker);
                 // go poll the future to register the waker or return early if
                 // message already arrived
                 continue;

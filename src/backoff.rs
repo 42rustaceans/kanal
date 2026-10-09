@@ -29,6 +29,37 @@ pub fn sleep(dur: Duration) {
     thread::sleep(dur)
 }
 
+#[cfg(not(loom))]
+static IDLE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[cfg(not(loom))]
+static IDLE: std::sync::Condvar = std::sync::Condvar::new();
+#[cfg(not(loom))]
+static SLEEPERS: AtomicUsize = AtomicUsize::new(0);
+
+/// Sleeps for up to `dur`, or until [`wake_sleepers`] is called.
+#[cfg(not(loom))]
+fn sleep_until_idle(dur: Duration) {
+    SLEEPERS.fetch_add(1, Ordering::SeqCst);
+    let guard = IDLE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _ = IDLE.wait_timeout(guard, dur);
+    SLEEPERS.fetch_sub(1, Ordering::SeqCst);
+}
+
+/// Wakes threads backing off in [`spin_cond`]; called by a thread that is
+/// about to block, as the sleepers may be the only ones able to make progress.
+#[cfg(not(loom))]
+#[inline(always)]
+pub fn wake_sleepers() {
+    if unlikely(SLEEPERS.load(Ordering::SeqCst) != 0) {
+        let _guard = IDLE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        IDLE.notify_all();
+    }
+}
+
 /// Emits a CPU instruction that signals the processor that it is in a spin
 /// loop.
 #[cfg(not(loom))]
@@ -191,7 +222,7 @@ pub fn spin_cond<F: Fn() -> bool>(cond: F) {
             spins <<= 1;
         }
         // Backoff about 1ms
-        sleep(Duration::from_nanos(1 << 20));
+        sleep_until_idle(Duration::from_nanos(1 << 20));
     }
 }
 

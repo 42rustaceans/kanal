@@ -279,6 +279,7 @@ impl<T> SyncSignal<T> {
                 break;
             }
         }
+        backoff::wake_sleepers();
         match self.state.compare_exchange(
             LOCKED,
             LOCKED_STARVATION,
@@ -334,6 +335,7 @@ impl<T> SyncSignal<T> {
             fence(Ordering::Acquire);
             return v == UNLOCKED;
         }
+        backoff::wake_sleepers();
         match self.state.compare_exchange(
             LOCKED,
             LOCKED_STARVATION,

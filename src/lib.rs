@@ -1319,6 +1319,9 @@ impl<T> Receiver<T> {
             // SAFETY: it's safe to receive from owned signal once
             return unsafe { Ok(p.recv()) };
         }
+        if unlikely(internal.send_count == 0) {
+            return Err(ReceiveErrorTimeout::Closed);
+        }
         let now = Instant::now();
         let Some(deadline) = deadline(now) else {
             // Deadline exceeds the representable Instant range: the timeout
@@ -1328,9 +1331,6 @@ impl<T> Receiver<T> {
         };
         if unlikely(now >= deadline) {
             return Err(ReceiveErrorTimeout::Timeout);
-        }
-        if unlikely(internal.send_count == 0) {
-            return Err(ReceiveErrorTimeout::Closed);
         }
         // no active waiter so push to the queue
         let mut ret = MaybeUninit::<T>::uninit();

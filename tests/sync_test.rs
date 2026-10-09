@@ -452,6 +452,21 @@ fn timeout_without_representable_deadline() {
 }
 
 #[test]
+fn timed_recv_on_closed_channel_reports_closed() {
+    let (tx, rx) = new::<u64>(Some(1));
+    drop(tx);
+    let past = std::time::Instant::now();
+    assert!(matches!(
+        rx.recv_deadline(past),
+        Err(kanal::ReceiveErrorTimeout::Closed)
+    ));
+    assert!(matches!(
+        rx.recv_timeout(Duration::ZERO),
+        Err(kanal::ReceiveErrorTimeout::Closed)
+    ));
+}
+
+#[test]
 fn recv_from_send_closed_channel_queue() {
     let (tx, rx) = new(Some(1));
     tx.send(Box::new(1)).unwrap();

@@ -438,6 +438,20 @@ fn recv_from_closed_channel_queue() {
 }
 
 #[test]
+fn timeout_without_representable_deadline() {
+    let (tx, rx) = new::<u64>(Some(0));
+    let h = thread::spawn(move || {
+        assert_eq!(rx.recv_timeout(Duration::MAX).unwrap(), 1);
+        thread::sleep(Duration::from_millis(50));
+        rx.recv().unwrap()
+    });
+    thread::sleep(Duration::from_millis(50));
+    tx.send(1).unwrap();
+    tx.send_timeout(2, Duration::MAX).unwrap();
+    assert_eq!(h.join().unwrap(), 2);
+}
+
+#[test]
 fn recv_from_send_closed_channel_queue() {
     let (tx, rx) = new(Some(1));
     tx.send(Box::new(1)).unwrap();

@@ -837,14 +837,7 @@ impl<T> Sender<T> {
         data: T,
         duration: Duration,
     ) -> Result<(), SendTimeoutError<T>> {
-        let Some(deadline) = Instant::now().checked_add(duration) else {
-            // Deadline exceeds the representable Instant range: the timeout
-            // can never fire, so wait without one.
-            return self
-                .send(data)
-                .map_err(|SendError(data)| SendTimeoutError::Closed(data));
-        };
-        self.send_deadline(data, deadline)
+        self.send_until(data, || Instant::now().checked_add(duration))
     }
 
     /// Sends data to the channel, waiting until the given deadline at most.
@@ -874,6 +867,16 @@ impl<T> Sender<T> {
         data: T,
         deadline: Instant,
     ) -> Result<(), SendTimeoutError<T>> {
+        self.send_until(data, || Some(deadline))
+    }
+
+    /// Sends with a deadline that is only computed once the send has to wait.
+    #[inline(always)]
+    fn send_until(
+        &self,
+        data: T,
+        deadline: impl FnOnce() -> Option<Instant>,
+    ) -> Result<(), SendTimeoutError<T>> {
         let cap = self.internal.capacity();
         let mut internal = acquire_internal(&self.internal);
         if unlikely(internal.recv_count == 0 || internal.send_count == 0) {
@@ -893,6 +896,14 @@ impl<T> Sender<T> {
             internal.queue.push_back(data);
             return Ok(());
         }
+        let Some(deadline) = deadline() else {
+            // Deadline exceeds the representable Instant range: the timeout
+            // can never fire, so wait without one.
+            drop(internal);
+            return self
+                .send(data)
+                .map_err(|SendError(data)| SendTimeoutError::Closed(data));
+        };
         let mut data = MaybeUninit::new(data);
         // send directly to the waitlist
         let sig = pin!(SyncSignal::new(KanalPtr::new_from(data.as_mut_ptr())));
@@ -1233,12 +1244,14 @@ impl<T> Receiver<T> {
         &self,
         duration: Duration,
     ) -> Result<T, ReceiveErrorTimeout> {
-        let Some(deadline) = Instant::now().checked_add(duration) else {
-            // Deadline exceeds the representable Instant range: the timeout
-            // can never fire, so wait without one.
-            return self.recv().map_err(|_| ReceiveErrorTimeout::Closed);
-        };
-        self.recv_deadline(deadline)
+        if duration.is_zero() {
+            return match self.try_recv() {
+                Ok(Some(v)) => Ok(v),
+                Ok(None) => Err(ReceiveErrorTimeout::Timeout),
+                Err(_) => Err(ReceiveErrorTimeout::Closed),
+            };
+        }
+        self.recv_until(|now| now.checked_add(duration))
     }
 
     /// Tries receiving from the channel, waiting until the given deadline at
@@ -1266,6 +1279,16 @@ impl<T> Receiver<T> {
     pub fn recv_deadline(
         &self,
         deadline: Instant,
+    ) -> Result<T, ReceiveErrorTimeout> {
+        self.recv_until(|_| Some(deadline))
+    }
+
+    /// Receives with a deadline that is only computed once the receive has to
+    /// wait.
+    #[inline(always)]
+    fn recv_until(
+        &self,
+        deadline: impl FnOnce(Instant) -> Option<Instant>,
     ) -> Result<T, ReceiveErrorTimeout> {
         let cap = self.internal.capacity();
         let mut internal = acquire_internal(&self.internal);
@@ -1295,7 +1318,14 @@ impl<T> Receiver<T> {
             // SAFETY: it's safe to receive from owned signal once
             return unsafe { Ok(p.recv()) };
         }
-        if unlikely(Instant::now() > deadline) {
+        let now = Instant::now();
+        let Some(deadline) = deadline(now) else {
+            // Deadline exceeds the representable Instant range: the timeout
+            // can never fire, so wait without one.
+            drop(internal);
+            return self.recv().map_err(|_| ReceiveErrorTimeout::Closed);
+        };
+        if unlikely(now >= deadline) {
             return Err(ReceiveErrorTimeout::Timeout);
         }
         if unlikely(internal.send_count == 0) {

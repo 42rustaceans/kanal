@@ -321,66 +321,63 @@ impl<T> ChannelInternal<T> {
         }
     }
 
+    /// Returns the waitlist index of `sig`, scanning from both ends at once
+    /// so that cancelling the newest waiter is as cheap as the oldest.
+    #[inline]
+    fn find_signal(&self, sig: *const ()) -> Option<usize> {
+        let mut it = self.wait_list.iter().enumerate();
+        loop {
+            match it.next() {
+                Some((i, s)) if s.eq_ptr(sig) => return Some(i),
+                Some(_) => {}
+                None => return None,
+            }
+            match it.next_back() {
+                Some((i, s)) if s.eq_ptr(sig) => return Some(i),
+                Some(_) => {}
+                None => return None,
+            }
+        }
+    }
+
+    /// Removes and cancels `sig` if it is still in the waitlist.
+    #[inline]
+    fn cancel_signal(&mut self, sig: *const ()) -> bool {
+        match self.find_signal(sig) {
+            Some(i) => {
+                // SAFETY: it's safe to cancel owned signal once, and the
+                // index was just found under the same lock
+                unsafe {
+                    self.wait_list.remove(i).unwrap_unchecked().cancel();
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Tries to remove the send signal from the waitlist, returns true if the
     /// operation was successful
     pub(crate) fn cancel_send_signal(&mut self, sig: *const ()) -> bool {
-        if !self.recv_blocking {
-            for (i, send) in self.wait_list.iter().enumerate() {
-                if send.eq_ptr(sig) {
-                    // SAFETY: it's safe to cancel owned signal once, we are
-                    // sure that index is valid
-                    unsafe {
-                        self.wait_list.remove(i).unwrap_unchecked().cancel();
-                    }
-                    return true;
-                }
-            }
-        }
-        false
+        !self.recv_blocking && self.cancel_signal(sig)
     }
 
     /// Tries to remove the received signal from the waitlist, returns true if
     /// the operation was successful
     pub(crate) fn cancel_recv_signal(&mut self, sig: *const ()) -> bool {
-        if self.recv_blocking {
-            for (i, recv) in self.wait_list.iter().enumerate() {
-                if recv.eq_ptr(sig) {
-                    // SAFETY: it's safe to cancel owned signal once, we are
-                    // sure that index is valid
-                    unsafe {
-                        self.wait_list.remove(i).unwrap_unchecked().cancel();
-                    }
-                    return true;
-                }
-            }
-        }
-        false
+        self.recv_blocking && self.cancel_signal(sig)
     }
 
     /// checks if send signal exists in wait list
     #[cfg(feature = "async")]
     pub(crate) fn send_signal_exists(&self, sig: *const ()) -> bool {
-        if !self.recv_blocking {
-            for signal in self.wait_list.iter() {
-                if signal.eq_ptr(sig) {
-                    return true;
-                }
-            }
-        }
-        false
+        !self.recv_blocking && self.find_signal(sig).is_some()
     }
 
     /// checks if receive signal exists in wait list
     #[cfg(feature = "async")]
     pub(crate) fn recv_signal_exists(&self, sig: *const ()) -> bool {
-        if self.recv_blocking {
-            for signal in self.wait_list.iter() {
-                if signal.eq_ptr(sig) {
-                    return true;
-                }
-            }
-        }
-        false
+        self.recv_blocking && self.find_signal(sig).is_some()
     }
 
     /// Increases ref count for sender or receiver

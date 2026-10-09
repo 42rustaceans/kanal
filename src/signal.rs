@@ -335,6 +335,25 @@ impl<T> SyncSignal<T> {
             fence(Ordering::Acquire);
             return v == UNLOCKED;
         }
+        let now = Instant::now();
+        let spin_timeout = now
+            .checked_add(Duration::from_micros(25))
+            .unwrap_or(now)
+            .min(until);
+        // spin like wait(), but never past the deadline
+        for _ in 0..32 {
+            if unlikely(Instant::now() >= spin_timeout) {
+                break;
+            }
+            for _ in 0..8 {
+                backoff::yield_os();
+                let v = self.state.load(Ordering::Relaxed);
+                if likely(v > LOCKED_STARVATION) {
+                    fence(Ordering::Acquire);
+                    return v == UNLOCKED;
+                }
+            }
+        }
         backoff::wake_sleepers();
         match self.state.compare_exchange(
             LOCKED,

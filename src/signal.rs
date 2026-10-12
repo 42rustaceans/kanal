@@ -264,9 +264,13 @@ impl<T> SyncSignal<T> {
         }
         let now = Instant::now();
         let spin_timeout =
-            now.checked_add(Duration::from_micros(25)).unwrap_or(now);
-        // 25 microseconds or 256 os yields, whichever happens first
-        for _ in 0..4 {
+            now.checked_add(Duration::from_millis(1)).unwrap_or(now);
+        // 1 millisecond or 256 os yields, whichever happens first
+        for i in 0..4 {
+            if i == 1 {
+                // a peer may be sleeping in the lock back-off
+                backoff::wake_sleepers();
+            }
             for _ in 0..64 {
                 backoff::yield_os();
                 let v = self.state.load(Ordering::Relaxed);
@@ -337,13 +341,16 @@ impl<T> SyncSignal<T> {
         }
         let now = Instant::now();
         let spin_timeout = now
-            .checked_add(Duration::from_micros(25))
+            .checked_add(Duration::from_millis(1))
             .unwrap_or(now)
             .min(until);
         // spin like wait(), but never past the deadline
-        for _ in 0..32 {
+        for i in 0..32 {
             if unlikely(Instant::now() >= spin_timeout) {
                 break;
+            }
+            if i == 4 {
+                backoff::wake_sleepers();
             }
             for _ in 0..8 {
                 backoff::yield_os();

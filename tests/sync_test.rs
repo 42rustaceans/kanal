@@ -452,6 +452,18 @@ fn timeout_without_representable_deadline() {
 }
 
 #[test]
+fn short_timeouts_expire() {
+    let (tx, rx) = new::<u64>(Some(0));
+    for us in [1, 50, 5000] {
+        let d = Duration::from_micros(us);
+        let t = std::time::Instant::now();
+        assert!(rx.recv_timeout(d).unwrap_err().is_timeout());
+        assert!(tx.send_timeout(1, d).unwrap_err().is_timeout());
+        assert!(t.elapsed() >= 2 * d);
+    }
+}
+
+#[test]
 fn timed_recv_on_closed_channel_reports_closed() {
     let (tx, rx) = new::<u64>(Some(1));
     drop(tx);

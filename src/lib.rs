@@ -409,6 +409,9 @@ macro_rules! shared_recv_impl {
         /// `Ok(None)` for a failed one, or error in case that channel is
         /// closed. Important note: this function is not lock-free as it
         /// acquires a mutex guard of the channel internal for a short time.
+        /// With the default lock, polling it in a tight loop keeps that lock
+        /// busy and can stall other users of the channel for a millisecond
+        /// or more at a time, more so with several polling receivers.
         ///
         /// # Examples
         ///
